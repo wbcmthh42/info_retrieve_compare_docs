@@ -98,92 +98,115 @@ def load_documents():
 
 def create_visualization(data, viz_type, x=None, y=None, title=None, color=None):
     """Helper function to create different types of plots"""
-    # Convert the data to ensure numbers are properly formatted
-    for item in data:
-        if "Value" in item:
-            # Convert string numbers with commas to float
-            if isinstance(item["Value"], str):
-                item["Value"] = float(item["Value"].replace(",", ""))
-    
-    df = pd.DataFrame(data)
-    
-    # Get the actual column names from the DataFrame
-    columns = df.columns.tolist()
-    x_col = columns[0]  # First column (Category)
-    y_col = columns[1]  # Second column (Value)
-
-    if viz_type == "pie":
-        fig = px.pie(df, names=x_col, values=y_col, title=title)
-    elif viz_type == "bar":
-        fig = px.bar(df, x=x_col, y=y_col, title=title, color=color)
+    try:
+        # Convert the data to ensure numbers are properly formatted
+        formatted_data = []
+        for item in data:
+            new_item = {}
+            # Find the numeric value (assume it's the first number we find)
+            value_key = next((k for k, v in item.items() if isinstance(v, (int, float)) or 
+                            (isinstance(v, str) and v.replace(',', '').replace('.', '').isdigit())), None)
+            # Find the category (assume it's the first non-numeric value)
+            category_key = next((k for k, v in item.items() if k != value_key), None)
+            
+            if value_key and category_key:
+                value = item[value_key]
+                if isinstance(value, str):
+                    value = float(value.replace(',', ''))
+                new_item[category_key] = item[category_key]
+                new_item[value_key] = value
+                formatted_data.append(new_item)
+        
+        df = pd.DataFrame(formatted_data)
+        
+        if df.empty:
+            raise ValueError("No valid data to visualize")
+        
+        # Get the actual column names from the DataFrame
+        columns = df.columns.tolist()
+        if len(columns) < 2:
+            raise ValueError("Need at least two columns for visualization")
+        
+        # Use provided column names or default to first two columns
+        x_col = x if x and x in columns else columns[0]  # First column
+        y_col = y if y and y in columns else columns[1]  # Second column
+        
+        if viz_type == "pie":
+            fig = px.pie(df, names=x_col, values=y_col, title=title)
+        elif viz_type == "bar":
+            fig = px.bar(df, x=x_col, y=y_col, title=title, color=color)
+            # Update layout for better appearance
+            fig.update_layout(
+                title_x=0.5,
+                margin=dict(t=50, l=50, r=50, b=50),
+                showlegend=True,
+                xaxis_title="",  # Remove x-axis title
+                yaxis_title="Sales"  # Add y-axis title
+            )
+            # Rotate x-axis labels if they're long
+            fig.update_xaxes(tickangle=45)
+        elif viz_type == "bar_horizontal":
+            fig = px.bar(df, x=y_col, y=x_col, title=title, color=color, orientation='h')
+        elif viz_type == "line":
+            fig = px.line(df, x=x_col, y=y_col, title=title, color=color)
+        elif viz_type == "scatter":
+            fig = px.scatter(df, x=x_col, y=y_col, title=title, color=color)
+        elif viz_type == "area":
+            fig = px.area(df, x=x_col, y=y_col, title=title, color=color)
+        elif viz_type == "bar_stacked":
+            fig = px.bar(df, x=x_col, y=y_col, title=title, color=color, barmode='stack')
+        elif viz_type == "bar_grouped":
+            fig = px.bar(df, x=x_col, y=y_col, title=title, color=color, barmode='group')
+        elif viz_type == "funnel":
+            fig = px.funnel(df, x=y_col, y=x_col, title=title)
+        elif viz_type == "timeline":
+            fig = px.timeline(df, x_start=x_col, x_end=y_col, y=color if color else x_col, title=title)
+        elif viz_type == "waterfall":
+            fig = go.Figure(go.Waterfall(
+                name="Waterfall",
+                orientation="v",
+                measure=["relative"] * len(df),
+                x=df[x_col],
+                y=df[y_col],
+                connector={"line": {"color": "rgb(63, 63, 63)"}},
+            ))
+            fig.update_layout(title=title)
+        elif viz_type == "radar":
+            fig = go.Figure()
+            fig.add_trace(go.Scatterpolar(
+                r=df[y_col],
+                theta=df[x_col],
+                fill='toself'
+            ))
+            fig.update_layout(title=title)
+        elif viz_type == "bubble":
+            size_col = columns[2] if len(columns) > 2 else y_col
+            fig = px.scatter(df, x=x_col, y=y_col, size=size_col, title=title)
+        elif viz_type == "violin":
+            fig = px.violin(df, x=x_col, y=y_col, title=title)
+        elif viz_type == "box":
+            fig = px.box(df, x=x_col, y=y_col, title=title)
+        elif viz_type == "histogram":
+            fig = px.histogram(df, x=x_col, title=title)
+        elif viz_type == "density_heatmap":
+            fig = px.density_heatmap(df, x=x_col, y=y_col, title=title)
+        
         # Update layout for better appearance
         fig.update_layout(
             title_x=0.5,
             margin=dict(t=50, l=50, r=50, b=50),
-            showlegend=True,
-            xaxis_title="",  # Remove x-axis title
-            yaxis_title="Sales"  # Add y-axis title
+            showlegend=True
         )
-        # Rotate x-axis labels if they're long
-        fig.update_xaxes(tickangle=45)
-    elif viz_type == "bar_horizontal":
-        fig = px.bar(df, x=y_col, y=x_col, title=title, color=color, orientation='h')
-    elif viz_type == "line":
-        fig = px.line(df, x=x_col, y=y_col, title=title, color=color)
-    elif viz_type == "scatter":
-        fig = px.scatter(df, x=x_col, y=y_col, title=title, color=color)
-    elif viz_type == "area":
-        fig = px.area(df, x=x_col, y=y_col, title=title, color=color)
-    elif viz_type == "bar_stacked":
-        fig = px.bar(df, x=x_col, y=y_col, title=title, color=color, barmode='stack')
-    elif viz_type == "bar_grouped":
-        fig = px.bar(df, x=x_col, y=y_col, title=title, color=color, barmode='group')
-    elif viz_type == "funnel":
-        fig = px.funnel(df, x=y_col, y=x_col, title=title)
-    elif viz_type == "timeline":
-        fig = px.timeline(df, x_start=x_col, x_end=y_col, y=color if color else x_col, title=title)
-    elif viz_type == "waterfall":
-        fig = go.Figure(go.Waterfall(
-            name="Waterfall",
-            orientation="v",
-            measure=["relative"] * len(df),
-            x=df[x_col],
-            y=df[y_col],
-            connector={"line": {"color": "rgb(63, 63, 63)"}},
-        ))
-        fig.update_layout(title=title)
-    elif viz_type == "radar":
-        fig = go.Figure()
-        fig.add_trace(go.Scatterpolar(
-            r=df[y_col],
-            theta=df[x_col],
-            fill='toself'
-        ))
-        fig.update_layout(title=title)
-    elif viz_type == "bubble":
-        size_col = columns[2] if len(columns) > 2 else y_col
-        fig = px.scatter(df, x=x_col, y=y_col, size=size_col, title=title)
-    elif viz_type == "violin":
-        fig = px.violin(df, x=x_col, y=y_col, title=title)
-    elif viz_type == "box":
-        fig = px.box(df, x=x_col, y=y_col, title=title)
-    elif viz_type == "histogram":
-        fig = px.histogram(df, x=x_col, title=title)
-    elif viz_type == "density_heatmap":
-        fig = px.density_heatmap(df, x=x_col, y=y_col, title=title)
-    
-    # Update layout for better appearance
-    fig.update_layout(
-        title_x=0.5,
-        margin=dict(t=50, l=50, r=50, b=50),
-        showlegend=True
-    )
-    
-    # Add hover data formatting
-    if hasattr(fig, 'update_traces'):
-        fig.update_traces(hovertemplate=None)
-    
-    return fig
+        
+        # Add hover data formatting
+        if hasattr(fig, 'update_traces'):
+            fig.update_traces(hovertemplate=None)
+        
+        return fig
+        
+    except Exception as e:
+        st.error(f"Error creating visualization: {str(e)}")
+        return None
 
 def get_data_info(df):
     """Get basic information about the dataset"""
@@ -220,8 +243,8 @@ def query_llm(client, prompt, vector_store):
             "type": "<visualization_type>",
             "title": "Chart Title",
             "data": [
-                {{"Category": "A", "Value": 100}},
-                {{"Category": "B", "Value": 200}}
+                {{"Year": "A", "Value": 100}},
+                {{"Year": "B", "Value": 200}}
             ]
         }}
         
@@ -305,15 +328,16 @@ def query_llm(client, prompt, vector_store):
             if viz_data.get("create_viz"):
                 # Clean up category labels before visualization
                 for item in viz_data["data"]:
-                    if "(Projected)" in item["Category"]:
-                        item["Category"] = item["Category"].replace(" (Projected)", "")
+                    if "(Projected)" in item["Year"]:
+                        item["Year"] = item["Year"].replace(" (Projected)", "")
                 
                 viz = create_visualization(
                     data=viz_data["data"],
                     viz_type=viz_data["type"],
                     title=viz_data.get("title", "")
                 )
-                st.plotly_chart(viz, use_container_width=True)
+                # Store the new chart in session state
+                st.session_state.charts.append(viz)
                 
                 # Remove the JSON from the response
                 response_content = re.sub(r'```(?:json)?\s*\{.*?\}\s*```', '', response_content, flags=re.DOTALL)
@@ -329,6 +353,10 @@ def query_llm(client, prompt, vector_store):
 
 def main():
     st.title("Financial Data Assistant")
+    
+    # Initialize charts list in session state if it doesn't exist
+    if 'charts' not in st.session_state:
+        st.session_state.charts = []
     
     # Get API key
     openai_api_key = st.sidebar.text_input("Enter your OpenAI API key", type="password")
@@ -378,12 +406,16 @@ def main():
             st.markdown(prompt)
 
         with st.chat_message("assistant"):
-            response = query_llm(client, prompt, vector_store)
+            # Clear previous charts before getting new response
+            st.session_state.charts = []
             
-            # Display the text response
+            response = query_llm(client, prompt, vector_store)
             st.markdown(response)
             
-            # Add assistant response to chat history
+            # Display only the charts generated from this response
+            for chart in st.session_state.charts:
+                st.plotly_chart(chart, use_container_width=True)
+            
             st.session_state.messages.append({"role": "assistant", "content": response})
 
 if __name__ == "__main__":
