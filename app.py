@@ -38,18 +38,36 @@ def process_pdf(file_path):
     chunks = text_splitter.split_documents(pages)
     return chunks
 
-@st.cache_resource
+@st.cache_resource(ttl="1h")  # Cache with 1 hour time-to-live
 def initialize_vector_store(openai_api_key):
     """Initialize and return the vector store"""
-    embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+    # Create the persist directory if it doesn't exist
+    persist_dir = "./chroma_db"
     
-    # Create/load vector store
-    vector_store = Chroma(
-        persist_directory="./chroma_db",
-        embedding_function=embeddings
-    )
-    
-    return vector_store
+    try:
+        # Initialize ChromaDB client with settings
+        settings = chromadb.Settings(
+            is_persistent=True,
+            persist_directory=persist_dir,
+            anonymized_telemetry=False
+        )
+        
+        # Create embeddings
+        embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+        
+        # Create vector store
+        vector_store = Chroma(
+            collection_name="financial_docs",
+            embedding_function=embeddings,
+            persist_directory=persist_dir
+        )
+        
+        return vector_store
+        
+    except Exception as e:
+        st.error(f"Failed to initialize vector store: {str(e)}")
+        st.error("Please ensure the application has write permissions in the current directory.")
+        return None
 
 def load_documents():
     """Load and process all PDFs from the data folder"""
@@ -80,17 +98,34 @@ def load_documents():
 
 def create_visualization(data, viz_type, x=None, y=None, title=None, color=None):
     """Helper function to create different types of plots"""
+    # Convert the data to ensure numbers are properly formatted
+    for item in data:
+        if "Value" in item:
+            # Convert string numbers with commas to float
+            if isinstance(item["Value"], str):
+                item["Value"] = float(item["Value"].replace(",", ""))
+    
     df = pd.DataFrame(data)
     
     # Get the actual column names from the DataFrame
     columns = df.columns.tolist()
-    x_col = columns[0]  # First column
-    y_col = columns[1]  # Second column
+    x_col = columns[0]  # First column (Category)
+    y_col = columns[1]  # Second column (Value)
 
     if viz_type == "pie":
         fig = px.pie(df, names=x_col, values=y_col, title=title)
     elif viz_type == "bar":
         fig = px.bar(df, x=x_col, y=y_col, title=title, color=color)
+        # Update layout for better appearance
+        fig.update_layout(
+            title_x=0.5,
+            margin=dict(t=50, l=50, r=50, b=50),
+            showlegend=True,
+            xaxis_title="",  # Remove x-axis title
+            yaxis_title="Sales"  # Add y-axis title
+        )
+        # Rotate x-axis labels if they're long
+        fig.update_xaxes(tickangle=45)
     elif viz_type == "bar_horizontal":
         fig = px.bar(df, x=y_col, y=x_col, title=title, color=color, orientation='h')
     elif viz_type == "line":
@@ -236,7 +271,61 @@ def query_llm(client, prompt, vector_store):
         temperature=0
     )
     
-    return response.choices[0].message.content
+    response_content = response.choices[0].message.content
+    
+    try:
+        # First try to find JSON block in code blocks
+        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_content, re.DOTALL)
+        if not json_match:
+            # If not in code block, try to find raw JSON
+            json_match = re.search(r'\{(?:[^{}]|{[^{}]*})*\}', response_content)
+        
+        if json_match:
+            # Get the JSON string from the appropriate group
+            json_str = json_match.group(1) if '```' in json_match.group() else json_match.group()
+            
+            # Clean up the JSON string
+            json_str = (json_str
+                       .replace('\n', '')
+                       .replace('\r', '')
+                       .replace('\t', '')
+                       .replace("'", '"')
+                       .replace('None', 'null')
+                       .replace('True', 'true')
+                       .replace('False', 'false'))
+            
+            # Remove commas from numbers but keep commas in strings
+            json_str = re.sub(r'(\d),(\d)', r'\1\2', json_str)
+            
+            # Remove any extra spaces between JSON elements
+            json_str = re.sub(r'\s+(?=[^"]*(?:"[^"]*"[^"]*)*$)', '', json_str)
+            
+            viz_data = json.loads(json_str)
+            
+            if viz_data.get("create_viz"):
+                # Clean up category labels before visualization
+                for item in viz_data["data"]:
+                    if "(Projected)" in item["Category"]:
+                        item["Category"] = item["Category"].replace(" (Projected)", "")
+                
+                viz = create_visualization(
+                    data=viz_data["data"],
+                    viz_type=viz_data["type"],
+                    title=viz_data.get("title", "")
+                )
+                st.plotly_chart(viz, use_container_width=True)
+                
+                # Remove the JSON from the response
+                response_content = re.sub(r'```(?:json)?\s*\{.*?\}\s*```', '', response_content, flags=re.DOTALL)
+                response_content = re.sub(r'\s*\{(?:[^{}]|{[^{}]*})*\}\s*', '', response_content)
+                response_content = response_content.strip()
+    
+    except json.JSONDecodeError as e:
+        st.error(f"JSON parsing error: {str(e)}")
+    except Exception as e:
+        st.error(f"Error creating visualization: {str(e)}")
+    
+    return response_content
 
 def main():
     st.title("Financial Data Assistant")
@@ -249,16 +338,31 @@ def main():
     
     client = OpenAI(api_key=openai_api_key)
     
-    # Initialize vector store
-    vector_store = initialize_vector_store(openai_api_key)
+    # Initialize vector store with better error handling
+    try:
+        vector_store = initialize_vector_store(openai_api_key)
+        if vector_store is None:
+            st.error("Vector store initialization failed. Please check your settings and try again.")
+            return
+    except Exception as e:
+        st.error(f"Error initializing vector store: {str(e)}")
+        return
     
     # Load documents button
     if st.sidebar.button("Load/Reload Documents"):
         with st.spinner("Processing documents..."):
-            chunks = load_documents()
-            if chunks:
-                vector_store.add_documents(chunks)
-                st.success(f"Processed {len(chunks)} document chunks!")
+            try:
+                chunks = load_documents()
+                if chunks:
+                    try:
+                        vector_store.add_documents(chunks)
+                        st.success(f"Processed {len(chunks)} document chunks!")
+                    except Exception as e:
+                        st.error(f"Error adding documents to vector store: {str(e)}")
+                else:
+                    st.warning("No documents were loaded. Please check your data folder.")
+            except Exception as e:
+                st.error(f"Error processing documents: {str(e)}")
 
     # Display chat history
     for idx, message in enumerate(st.session_state.messages):
@@ -276,36 +380,11 @@ def main():
         with st.chat_message("assistant"):
             response = query_llm(client, prompt, vector_store)
             
-            # Check if response contains visualization suggestion
-            viz = None
-            try:
-                json_match = re.search(r'\{(?:[^{}]|{[^{}]*})*\}', response)
-                if json_match:
-                    json_str = json_match.group()
-                    json_str = json_str.replace("'", '"').strip()
-                    viz_data = json.loads(json_str)
-                    
-                    if viz_data.get("create_viz"):
-                        viz = create_visualization(
-                            data=viz_data["data"],
-                            viz_type=viz_data["type"],
-                            title=viz_data["title"]
-                        )
-                        st.plotly_chart(viz, use_container_width=True, 
-                                      key=f"new_viz_{len(st.session_state.messages)}")
-                        # Remove the JSON from the response
-                        response = response.replace(json_str, '')
-            except Exception as e:
-                st.error(f"Error creating visualization: {str(e)}")
-            
             # Display the text response
             st.markdown(response)
             
             # Add assistant response to chat history
-            message = {"role": "assistant", "content": response}
-            if viz:
-                message["viz"] = viz
-            st.session_state.messages.append(message)
+            st.session_state.messages.append({"role": "assistant", "content": response})
 
 if __name__ == "__main__":
     main()
