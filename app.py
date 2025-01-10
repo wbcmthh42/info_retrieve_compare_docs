@@ -206,8 +206,6 @@ def query_llm(client, prompt, vector_store):
         - "timeline": Time-based events
         
         Complex Charts:
-        - "sunburst": Hierarchical data
-        - "treemap": Hierarchical proportions
         - "waterfall": Sequential changes
         - "radar": Multi-variable comparison
         - "bubble": Three-variable visualization
