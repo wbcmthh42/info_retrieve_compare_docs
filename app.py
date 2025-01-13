@@ -243,8 +243,8 @@ def query_llm(client, prompt, vector_store):
             "type": "<visualization_type>",
             "title": "Chart Title",
             "data": [
-                {{"Year": "A", "Value": 100}},
-                {{"Year": "B", "Value": 200}}
+                {{"Category": "A", "Value": 100}},
+                {{"Category": "B", "Value": 200}}
             ]
         }}
         
@@ -328,8 +328,10 @@ def query_llm(client, prompt, vector_store):
             if viz_data.get("create_viz"):
                 # Clean up category labels before visualization
                 for item in viz_data["data"]:
-                    if "(Projected)" in item["Year"]:
-                        item["Year"] = item["Year"].replace(" (Projected)", "")
+                    if isinstance(item, dict):
+                        for key in item.keys():
+                            if isinstance(item[key], str) and "(Projected)" in item[key]:
+                                item[key] = item[key].replace(" (Projected)", "")
                 
                 viz = create_visualization(
                     data=viz_data["data"],
