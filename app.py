@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-# import seaborn as sns
+import seaborn as sns
 from io import BytesIO
 from openai import OpenAI
 import json
@@ -54,7 +54,7 @@ def initialize_vector_store(openai_api_key):
         )
         
         # Create embeddings
-        embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+        embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key, model="text-embedding-3-small")
         
         # Create vector store
         vector_store = Chroma(
@@ -278,41 +278,33 @@ def query_llm(client, prompt, vector_store):
             # Get the Python code
             plot_code = code_match.group(1)
             
-            # Execute the plot code and get the image
-            viz = execute_plot_code(plot_code)
+            # Create a new figure before executing the code
+            plt.figure(figsize=(10, 6))
             
-            if viz:
-                # Store the new chart in session state
-                st.session_state.charts.append(viz)
-                
-                # Remove the code block from the response
-                response_content = re.sub(r'```python\s*.*?\s*```', '', response_content, flags=re.DOTALL)
-                response_content = response_content.strip()
+            # Add necessary imports to the code
+            plot_code = "import matplotlib.pyplot as plt\nimport numpy as np\n" + plot_code
+            
+            # Execute the plot code in a local namespace
+            local_vars = {}
+            exec(plot_code, globals(), local_vars)
+            
+            # Convert plot to image
+            buf = BytesIO()
+            plt.savefig(buf, format='png', bbox_inches='tight')
+            plt.close()
+            
+            # Store the new chart in session state
+            st.session_state.charts.append(buf)
+            
+            # Remove the code block from the response
+            response_content = re.sub(r'```python\s*.*?\s*```', '', response_content, flags=re.DOTALL)
+            response_content = response_content.strip()
     
     except Exception as e:
         st.error(f"Error processing visualization: {str(e)}")
+        st.exception(e)
     
     return response_content
-
-def execute_plot_code(code_block):
-    """Execute matplotlib code and return the plot as BytesIO"""
-    try:
-        # Create BytesIO buffer for the plot
-        buf = BytesIO()
-        
-        # Execute the code block with plot commands
-        exec(code_block)
-        
-        # Save the current figure to the buffer
-        plt.savefig(buf, format='png', bbox_inches='tight')
-        plt.close()
-        
-        return buf
-        
-    except Exception as e:
-        st.error(f"Error executing plot code: {str(e)}")
-        st.exception(e)  # This will show the full traceback
-        return None
 
 def main():
     st.title("Financial Data Assistant")
