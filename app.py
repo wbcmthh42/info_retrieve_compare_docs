@@ -100,7 +100,6 @@ def load_documents():
 def create_visualization(data, viz_type, x=None, y=None, title=None, color=None):
     """Helper function to create different types of plots using matplotlib"""
     try:
-        
         # Convert data to DataFrame first
         df = pd.DataFrame(data)
         
@@ -124,12 +123,33 @@ def create_visualization(data, viz_type, x=None, y=None, title=None, color=None)
         if not (continuous_col and categorical_col):
             raise ValueError("Could not identify categorical and continuous columns")
         
-        # Ensure categorical column is treated as categorical
-        df[categorical_col] = df[categorical_col].astype(str)
+        # Month ordering logic
+        month_order = {
+            'January': '01', 'Jan': '01',
+            'February': '02', 'Feb': '02',
+            'March': '03', 'Mar': '03',
+            'April': '04', 'Apr': '04',
+            'May': '05',
+            'June': '06', 'Jun': '06',
+            'July': '07', 'Jul': '07',
+            'August': '08', 'Aug': '08',
+            'September': '09', 'Sep': '09',
+            'October': '10', 'Oct': '10',
+            'November': '11', 'Nov': '11',
+            'December': '12', 'Dec': '12'
+        }
         
-        # For line plots and similar, maintain the original order
-        if viz_type in ["line", "area"]:
-            df = df.sort_values(categorical_col)
+        # Check if categories are months and sort accordingly
+        categories = df[categorical_col].tolist()
+        if any(month in month_order for month in categories):
+            # Create a sorting key that maps months to numbers
+            df['sort_key'] = df[categorical_col].map(lambda x: month_order.get(x, x))
+            df = df.sort_values('sort_key')
+            df = df.drop('sort_key', axis=1)
+        else:
+            # For line plots and similar, maintain the original order
+            if viz_type in ["line", "area"]:
+                df = df.sort_values(categorical_col)
         
         # Create figure and axis
         plt.figure(figsize=(10, 6))
@@ -372,8 +392,7 @@ def main():
     for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            if "viz" in message:
-                # Get the image data from the BytesIO buffer
+            if "viz" in message and message["viz"] is not None:  # Add null check
                 message["viz"].seek(0)  # Reset buffer position
                 st.image(message["viz"].getvalue(), use_container_width=True)
 
@@ -401,7 +420,7 @@ def main():
                 "role": "assistant", 
                 "content": response
             }
-            if st.session_state.charts:  # If there are charts, store the first one
+            if st.session_state.charts:  # Only add viz if there are charts
                 message_with_viz["viz"] = st.session_state.charts[0]
             
             st.session_state.messages.append(message_with_viz)
