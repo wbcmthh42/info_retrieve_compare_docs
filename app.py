@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
+import matplotlib.pyplot as plt
+# import seaborn as sns
+from io import BytesIO
 from openai import OpenAI
 import json
 import PyPDF2
@@ -97,115 +98,88 @@ def load_documents():
     return all_chunks
 
 def create_visualization(data, viz_type, x=None, y=None, title=None, color=None):
-    """Helper function to create different types of plots"""
+    """Helper function to create different types of plots using matplotlib"""
     try:
-        # Convert the data to ensure numbers are properly formatted
-        formatted_data = []
-        for item in data:
-            new_item = {}
-            # Find the numeric value (assume it's the first number we find)
-            value_key = next((k for k, v in item.items() if isinstance(v, (int, float)) or 
-                            (isinstance(v, str) and v.replace(',', '').replace('.', '').isdigit())), None)
-            # Find the category (assume it's the first non-numeric value)
-            category_key = next((k for k, v in item.items() if k != value_key), None)
-            
-            if value_key and category_key:
-                value = item[value_key]
-                if isinstance(value, str):
-                    value = float(value.replace(',', ''))
-                new_item[category_key] = item[category_key]
-                new_item[value_key] = value
-                formatted_data.append(new_item)
         
-        df = pd.DataFrame(formatted_data)
+        # Convert data to DataFrame first
+        df = pd.DataFrame(data)
         
-        if df.empty:
-            raise ValueError("No valid data to visualize")
+        # Identify continuous and categorical columns
+        continuous_col = None
+        categorical_col = None
         
-        # Get the actual column names from the DataFrame
-        columns = df.columns.tolist()
-        if len(columns) < 2:
-            raise ValueError("Need at least two columns for visualization")
+        # Look for standard "Category" and "Value" columns
+        if "Category" in df.columns and "Value" in df.columns:
+            categorical_col = "Category"
+            continuous_col = "Value"
+        else:
+            # Fallback to type detection
+            for col in df.columns:
+                try:
+                    df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''))
+                    continuous_col = col
+                except:
+                    categorical_col = col
         
-        # Use provided column names or default to first two columns
-        x_col = x if x and x in columns else columns[0]  # First column
-        y_col = y if y and y in columns else columns[1]  # Second column
+        if not (continuous_col and categorical_col):
+            raise ValueError("Could not identify categorical and continuous columns")
+        
+        # Ensure categorical column is treated as categorical
+        df[categorical_col] = df[categorical_col].astype(str)
+        
+        # For line plots and similar, maintain the original order
+        if viz_type in ["line", "area"]:
+            df = df.sort_values(categorical_col)
+        
+        # Create figure and axis
+        plt.figure(figsize=(10, 6))
         
         if viz_type == "pie":
-            fig = px.pie(df, names=x_col, values=y_col, title=title)
+            plt.pie(df[continuous_col], labels=df[categorical_col], autopct='%1.1f%%')
         elif viz_type == "bar":
-            fig = px.bar(df, x=x_col, y=y_col, title=title, color=color)
-            # Update layout for better appearance
-            fig.update_layout(
-                title_x=0.5,
-                margin=dict(t=50, l=50, r=50, b=50),
-                showlegend=True,
-                xaxis_title="",  # Remove x-axis title
-                yaxis_title="Sales"  # Add y-axis title
-            )
-            # Rotate x-axis labels if they're long
-            fig.update_xaxes(tickangle=45)
+            plt.bar(range(len(df[categorical_col])), df[continuous_col])
+            plt.xticks(range(len(df[categorical_col])), df[categorical_col], rotation=45, ha='right')
+            plt.xlabel(categorical_col)
+            plt.ylabel(continuous_col)
         elif viz_type == "bar_horizontal":
-            fig = px.bar(df, x=y_col, y=x_col, title=title, color=color, orientation='h')
+            plt.barh(range(len(df[categorical_col])), df[continuous_col])
+            plt.yticks(range(len(df[categorical_col])), df[categorical_col])
+            plt.xlabel(continuous_col)
+            plt.ylabel(categorical_col)
         elif viz_type == "line":
-            fig = px.line(df, x=x_col, y=y_col, title=title, color=color)
+            plt.plot(range(len(df[categorical_col])), df[continuous_col], marker='o')
+            plt.xticks(range(len(df[categorical_col])), df[categorical_col], rotation=45, ha='right')
+            plt.xlabel(categorical_col)
+            plt.ylabel(continuous_col)
         elif viz_type == "scatter":
-            fig = px.scatter(df, x=x_col, y=y_col, title=title, color=color)
+            plt.scatter(range(len(df[categorical_col])), df[continuous_col])
+            plt.xticks(range(len(df[categorical_col])), df[categorical_col], rotation=45, ha='right')
+            plt.xlabel(categorical_col)
+            plt.ylabel(continuous_col)
         elif viz_type == "area":
-            fig = px.area(df, x=x_col, y=y_col, title=title, color=color)
-        elif viz_type == "bar_stacked":
-            fig = px.bar(df, x=x_col, y=y_col, title=title, color=color, barmode='stack')
-        elif viz_type == "bar_grouped":
-            fig = px.bar(df, x=x_col, y=y_col, title=title, color=color, barmode='group')
-        elif viz_type == "funnel":
-            fig = px.funnel(df, x=y_col, y=x_col, title=title)
-        elif viz_type == "timeline":
-            fig = px.timeline(df, x_start=x_col, x_end=y_col, y=color if color else x_col, title=title)
-        elif viz_type == "waterfall":
-            fig = go.Figure(go.Waterfall(
-                name="Waterfall",
-                orientation="v",
-                measure=["relative"] * len(df),
-                x=df[x_col],
-                y=df[y_col],
-                connector={"line": {"color": "rgb(63, 63, 63)"}},
-            ))
-            fig.update_layout(title=title)
-        elif viz_type == "radar":
-            fig = go.Figure()
-            fig.add_trace(go.Scatterpolar(
-                r=df[y_col],
-                theta=df[x_col],
-                fill='toself'
-            ))
-            fig.update_layout(title=title)
-        elif viz_type == "bubble":
-            size_col = columns[2] if len(columns) > 2 else y_col
-            fig = px.scatter(df, x=x_col, y=y_col, size=size_col, title=title)
-        elif viz_type == "violin":
-            fig = px.violin(df, x=x_col, y=y_col, title=title)
-        elif viz_type == "box":
-            fig = px.box(df, x=x_col, y=y_col, title=title)
+            plt.fill_between(range(len(df[categorical_col])), df[continuous_col])
+            plt.xticks(range(len(df[categorical_col])), df[categorical_col], rotation=45, ha='right')
+            plt.xlabel(categorical_col)
+            plt.ylabel(continuous_col)
         elif viz_type == "histogram":
-            fig = px.histogram(df, x=x_col, title=title)
-        elif viz_type == "density_heatmap":
-            fig = px.density_heatmap(df, x=x_col, y=y_col, title=title)
+            plt.hist(df[continuous_col], bins=20)
+            plt.xlabel(continuous_col)
+            plt.ylabel("Frequency")
         
-        # Update layout for better appearance
-        fig.update_layout(
-            title_x=0.5,
-            margin=dict(t=50, l=50, r=50, b=50),
-            showlegend=True
-        )
+        # Common plot settings
+        plt.title(title if title else f"{viz_type.title()} Chart")
+        plt.tight_layout()
         
-        # Add hover data formatting
-        if hasattr(fig, 'update_traces'):
-            fig.update_traces(hovertemplate=None)
+        # Convert plot to image
+        buf = BytesIO()
+        plt.savefig(buf, format='png', bbox_inches='tight')
+        plt.close()
         
-        return fig
+        return buf
         
     except Exception as e:
         st.error(f"Error creating visualization: {str(e)}")
+        st.exception(e)  # This will show the full traceback
         return None
 
 def get_data_info(df):
@@ -243,8 +217,8 @@ def query_llm(client, prompt, vector_store):
             "type": "<visualization_type>",
             "title": "Chart Title",
             "data": [
-                {{"Category": "A", "Value": 100}},
-                {{"Category": "B", "Value": 200}}
+                {{"Category": "<categorical_value>", "Value": <numeric_value>}},
+                {{"Category": "<categorical_value>", "Value": <numeric_value>}}
             ]
         }}
         
@@ -399,7 +373,9 @@ def main():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
             if "viz" in message:
-                st.plotly_chart(message["viz"], key=f"hist_viz_{idx}")
+                # Get the image data from the BytesIO buffer
+                message["viz"].seek(0)  # Reset buffer position
+                st.image(message["viz"].getvalue(), use_container_width=True)
 
     # Chat input
     if prompt := st.chat_input("Ask me about the financial data!"):
@@ -416,9 +392,19 @@ def main():
             
             # Display only the charts generated from this response
             for chart in st.session_state.charts:
-                st.plotly_chart(chart, use_container_width=True)
+                if chart is not None:  # Add null check
+                    chart.seek(0)  # Reset buffer position
+                    st.image(chart.getvalue(), use_container_width=True)
             
-            st.session_state.messages.append({"role": "assistant", "content": response})
+            # Store both the response and the chart in the message history
+            message_with_viz = {
+                "role": "assistant", 
+                "content": response
+            }
+            if st.session_state.charts:  # If there are charts, store the first one
+                message_with_viz["viz"] = st.session_state.charts[0]
+            
+            st.session_state.messages.append(message_with_viz)
 
 if __name__ == "__main__":
     main()
