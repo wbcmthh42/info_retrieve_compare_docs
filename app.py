@@ -31,8 +31,9 @@ def process_pdf(file_path):
     pages = loader.load()
     
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
+        chunk_size=500,
+        chunk_overlap=250,
+        separators=["\n\n", "\n", " ", ""],
         length_function=len
     )
     
@@ -42,10 +43,14 @@ def process_pdf(file_path):
 @st.cache_resource(ttl="1h")  # Cache with 1 hour time-to-live
 def initialize_vector_store(openai_api_key):
     """Initialize and return the vector store"""
-    # Create the persist directory if it doesn't exist
     persist_dir = "./chroma_db"
     
     try:
+        # Delete existing database if it exists
+        if os.path.exists(persist_dir):
+            import shutil
+            shutil.rmtree(persist_dir)
+        
         # Initialize ChromaDB client with settings
         settings = chromadb.Settings(
             is_persistent=True,
@@ -53,10 +58,8 @@ def initialize_vector_store(openai_api_key):
             anonymized_telemetry=False
         )
         
-        # Create embeddings
-        embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key, model="text-embedding-3-small")
+        embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key, model="text-embedding-3-large")
         
-        # Create vector store
         vector_store = Chroma(
             collection_name="financial_docs",
             embedding_function=embeddings,
@@ -338,8 +341,13 @@ def main():
                 chunks = load_documents()
                 if chunks:
                     try:
-                        vector_store.add_documents(chunks)
-                        st.success(f"Processed {len(chunks)} document chunks!")
+                        # Add documents in batches of 5000
+                        batch_size = 5000
+                        for i in range(0, len(chunks), batch_size):
+                            batch = chunks[i:i + batch_size]
+                            vector_store.add_documents(batch)
+                            st.info(f"Processed batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1}")
+                        st.success(f"Successfully processed {len(chunks)} document chunks!")
                     except Exception as e:
                         st.error(f"Error adding documents to vector store: {str(e)}")
                 else:
