@@ -231,45 +231,25 @@ def query_llm(client, prompt, vector_store):
         2. If found, provide detailed analysis
         3. If not found, inform the user what information is available
         
-        If a visualization would be helpful, include EXACTLY ONE JSON block in this format:
-        {{
-            "create_viz": true,
-            "type": "<visualization_type>",
-            "title": "Chart Title",
-            "data": [
-                {{"Category": "<categorical_value>", "Value": <numeric_value>}},
-                {{"Category": "<categorical_value>", "Value": <numeric_value>}}
-            ]
-        }}
+        If a visualization would be helpful, include EXACTLY ONE Python code block with matplotlib code in this format:
+        ```python
+        import matplotlib.pyplot as plt
         
-        Supported visualization types:
-        Basic Charts:
-        - "pie": For parts of a whole
-        - "bar": Vertical bars
-        - "bar_horizontal": Horizontal bars
-        - "line": Trends over time
-        - "scatter": Correlation between variables
+        # Data
+        categories = ["cat1", "cat2", "cat3"]
+        values = [val1, val2, val3]
         
-        Advanced Charts:
-        - "bar_stacked": Stacked bars
-        - "bar_grouped": Grouped bars
-        - "area": Area chart
-        - "funnel": Funnel analysis
-        - "timeline": Time-based events
+        # Create visualization
+        plt.figure(figsize=(10, 6))
+        # ... plotting code ...
+        plt.title("Chart Title")
+        plt.xlabel("X Label")
+        plt.ylabel("Y Label")
+        plt.tight_layout()
+        ```
         
-        Complex Charts:
-        - "waterfall": Sequential changes
-        - "radar": Multi-variable comparison
-        - "bubble": Three-variable visualization
-        
-        Statistical Charts:
-        - "violin": Distribution analysis
-        - "box": Statistical distribution
-        - "histogram": Frequency distribution
-        - "density_heatmap": 2D distribution
-        
-        Format the data structure appropriately for the chosen visualization type.
-        For hierarchical charts (sunburst, treemap), provide nested categories.
+        For monthly data, ensure to sort months chronologically, not alphabetically.
+        Always include proper axis labels and titles.
         """}
     ]
     
@@ -291,61 +271,48 @@ def query_llm(client, prompt, vector_store):
     response_content = response.choices[0].message.content
     
     try:
-        # First try to find JSON block in code blocks
-        json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response_content, re.DOTALL)
-        if not json_match:
-            # If not in code block, try to find raw JSON
-            json_match = re.search(r'\{(?:[^{}]|{[^{}]*})*\}', response_content)
+        # Try to find Python code block
+        code_match = re.search(r'```python\s*(.*?)\s*```', response_content, re.DOTALL)
         
-        if json_match:
-            # Get the JSON string from the appropriate group
-            json_str = json_match.group(1) if '```' in json_match.group() else json_match.group()
+        if code_match:
+            # Get the Python code
+            plot_code = code_match.group(1)
             
-            # Clean up the JSON string
-            json_str = (json_str
-                       .replace('\n', '')
-                       .replace('\r', '')
-                       .replace('\t', '')
-                       .replace("'", '"')
-                       .replace('None', 'null')
-                       .replace('True', 'true')
-                       .replace('False', 'false'))
+            # Execute the plot code and get the image
+            viz = execute_plot_code(plot_code)
             
-            # Remove commas from numbers but keep commas in strings
-            json_str = re.sub(r'(\d),(\d)', r'\1\2', json_str)
-            
-            # Remove any extra spaces between JSON elements
-            json_str = re.sub(r'\s+(?=[^"]*(?:"[^"]*"[^"]*)*$)', '', json_str)
-            
-            viz_data = json.loads(json_str)
-            
-            if viz_data.get("create_viz"):
-                # Clean up category labels before visualization
-                for item in viz_data["data"]:
-                    if isinstance(item, dict):
-                        for key in item.keys():
-                            if isinstance(item[key], str) and "(Projected)" in item[key]:
-                                item[key] = item[key].replace(" (Projected)", "")
-                
-                viz = create_visualization(
-                    data=viz_data["data"],
-                    viz_type=viz_data["type"],
-                    title=viz_data.get("title", "")
-                )
+            if viz:
                 # Store the new chart in session state
                 st.session_state.charts.append(viz)
                 
-                # Remove the JSON from the response
-                response_content = re.sub(r'```(?:json)?\s*\{.*?\}\s*```', '', response_content, flags=re.DOTALL)
-                response_content = re.sub(r'\s*\{(?:[^{}]|{[^{}]*})*\}\s*', '', response_content)
+                # Remove the code block from the response
+                response_content = re.sub(r'```python\s*.*?\s*```', '', response_content, flags=re.DOTALL)
                 response_content = response_content.strip()
     
-    except json.JSONDecodeError as e:
-        st.error(f"JSON parsing error: {str(e)}")
     except Exception as e:
-        st.error(f"Error creating visualization: {str(e)}")
+        st.error(f"Error processing visualization: {str(e)}")
     
     return response_content
+
+def execute_plot_code(code_block):
+    """Execute matplotlib code and return the plot as BytesIO"""
+    try:
+        # Create BytesIO buffer for the plot
+        buf = BytesIO()
+        
+        # Execute the code block with plot commands
+        exec(code_block)
+        
+        # Save the current figure to the buffer
+        plt.savefig(buf, format='png', bbox_inches='tight')
+        plt.close()
+        
+        return buf
+        
+    except Exception as e:
+        st.error(f"Error executing plot code: {str(e)}")
+        st.exception(e)  # This will show the full traceback
+        return None
 
 def main():
     st.title("Financial Data Assistant")
