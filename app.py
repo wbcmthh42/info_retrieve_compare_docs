@@ -13,6 +13,7 @@ from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 from langchain.document_loaders import PyPDFLoader
 import chromadb
+import numpy as np
 
 # Set up the Streamlit page
 st.set_page_config(page_title="AI Learning Resources Assistant", layout="wide")
@@ -27,8 +28,8 @@ def process_pdf(file_path):
     pages = loader.load()
     
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=250,
+        chunk_size=200,
+        chunk_overlap=100,
         separators=["\n\n", "\n", " ", ""],
         length_function=len
     )
@@ -154,22 +155,31 @@ def query_llm(client, prompt, vector_store):
     response_content = response.choices[0].message.content
     
     try:
-        # Try to find Python code block
         code_match = re.search(r'```python\s*(.*?)\s*```', response_content, re.DOTALL)
         
         if code_match:
             # Get the Python code
             plot_code = code_match.group(1)
             
-            # Create a new figure before executing the code
-            plt.figure(figsize=(10, 6))
+            # Create a new figure and axis
+            fig, ax = plt.subplots(figsize=(10, 6))
             
-            # Add necessary imports to the code
-            plot_code = "import matplotlib.pyplot as plt\nimport numpy as np\n" + plot_code
+            # Create a namespace with all required variables
+            namespace = {
+                'plt': plt,
+                'np': np,
+                'fig': fig,
+                'ax': ax,
+                'autolabel': lambda rects: [ax.annotate(f'{height:.0f}', 
+                                                      xy=(rect.get_x() + rect.get_width()/2, height),
+                                                      xytext=(0, 3),
+                                                      textcoords='offset points',
+                                                      ha='center') 
+                                          for rect, height in [(rect, rect.get_height()) for rect in rects]]
+            }
             
-            # Execute the plot code in a local namespace
-            local_vars = {}
-            exec(plot_code, globals(), local_vars)
+            # Execute the plot code in the namespace
+            exec(plot_code, namespace)
             
             # Convert plot to image
             buf = BytesIO()
