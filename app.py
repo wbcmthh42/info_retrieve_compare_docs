@@ -21,10 +21,6 @@ st.set_page_config(page_title="AI Learning Resources Assistant", layout="wide")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# Add this at the top with other session state initializations
-if "processed_data" not in st.session_state:
-    st.session_state.processed_data = []
-
 def process_pdf(file_path):
     """Process a single PDF file and return chunks"""
     loader = PyPDFLoader(file_path)
