@@ -5,15 +5,18 @@ import seaborn as sns
 from io import BytesIO
 from openai import OpenAI
 import json
-import PyPDF2
-import os
 import re
+import os
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
-from langchain.document_loaders import PyPDFLoader
+from langchain.document_loaders import PDFPlumberLoader
+from langchain.schema import Document
 import chromadb
 import numpy as np
+
+import camelot
+from typing import List, Dict
 
 # Set up the Streamlit page
 st.set_page_config(page_title="AI Learning Resources Assistant", layout="wide")
@@ -22,19 +25,56 @@ st.set_page_config(page_title="AI Learning Resources Assistant", layout="wide")
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-def process_pdf(file_path):
-    """Process a single PDF file and return chunks"""
-    loader = PyPDFLoader(file_path)
-    pages = loader.load()
+# def process_pdf(file_path):
+#     """Process a single PDF file and return chunks"""
+#     loader = PDFPlumberLoader(file_path)
+#     pages = loader.load()
+    
+#     text_splitter = RecursiveCharacterTextSplitter(
+#         chunk_size=200,
+#         chunk_overlap=100,
+#         separators=["\n\n", "\n", " ", ""],
+#         length_function=len
+#     )
+    
+#     chunks = text_splitter.split_documents(pages)
+#     return chunks
+
+def process_pdf(file_path: str) -> List[Document]:
+    """Process a single PDF file and extract both tables and text"""
+    chunks = []
+    
+    # Extract tables using Camelot
+    tables = camelot.read_pdf(file_path, pages='all', flavor='lattice')
+    for idx, table in enumerate(tables):
+        df = table.df
+        table_str = f"Table {idx + 1}:\n{df.to_string()}"
+        # Convert dict to Document
+        chunks.append(Document(
+            page_content=table_str,
+            metadata={
+                "source": file_path,
+                "page": table.parsing_report['page'],
+                "content_type": "table",
+                "table_number": idx + 1
+            }
+        ))
+    
+    # Extract text using PDFPlumber (if needed)
+    loader = PDFPlumberLoader(file_path)
+    text_pages = loader.load()
     
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=200,
         chunk_overlap=100,
-        separators=["\n\n", "\n", " ", ""],
-        length_function=len
+        separators=["\n\n", "\n", " ", ""]
     )
     
-    chunks = text_splitter.split_documents(pages)
+    text_chunks = text_splitter.split_documents(text_pages)
+    for chunk in text_chunks:
+        chunk.metadata["content_type"] = "text"
+        chunks.append(chunk)
+    
     return chunks
 
 @st.cache_resource(ttl="1h")  # Cache with 1 hour time-to-live
@@ -249,9 +289,9 @@ def main():
     for idx, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            if "viz" in message and message["viz"] is not None:  # Add null check
-                message["viz"].seek(0)  # Reset buffer position
-                st.image(message["viz"].getvalue(), use_container_width=True)
+            if "viz" in message and message["viz"] is not None:
+                message["viz"].seek(0)
+                st.image(message["viz"].getvalue(), width=None)
 
     # Chat input
     if prompt := st.chat_input("Ask me about the financial data!"):
@@ -268,9 +308,9 @@ def main():
             
             # Display only the charts generated from this response
             for chart in st.session_state.charts:
-                if chart is not None:  # Add null check
-                    chart.seek(0)  # Reset buffer position
-                    st.image(chart.getvalue(), use_container_width=True)
+                if chart is not None:
+                    chart.seek(0)
+                    st.image(chart.getvalue(), width=None)
             
             # Store both the response and the chart in the message history
             message_with_viz = {
