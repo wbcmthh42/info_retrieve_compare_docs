@@ -1,326 +1,183 @@
 import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from io import BytesIO
-from openai import OpenAI
-import json
-import re
+from PyPDF2 import PdfReader
+from openai import AzureOpenAI
 import os
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.document_loaders import PDFPlumberLoader
-from langchain.schema import Document
-import chromadb
-import numpy as np
+from dotenv import load_dotenv
 
-import camelot
-from typing import List, Dict
+# Load environment variables
+load_dotenv()
 
-# Set up the Streamlit page
-st.set_page_config(page_title="AI Learning Resources Assistant", layout="wide")
+# Initialize Azure OpenAI client
+client = AzureOpenAI(
+    api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+    api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+    azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+)
 
-# Initialize session state for chat history
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+def load_pdf_pypdf(uploaded_file):
+    """Load and extract text from uploaded PDF file"""
+    loader = PdfReader(uploaded_file)
+    text = ""
+    for page in loader.pages:
+        text += page.extract_text() + "\n"
+    return text
 
-# def process_pdf(file_path):
-#     """Process a single PDF file and return chunks"""
-#     loader = PDFPlumberLoader(file_path)
-#     pages = loader.load()
-    
-#     text_splitter = RecursiveCharacterTextSplitter(
-#         chunk_size=200,
-#         chunk_overlap=100,
-#         separators=["\n\n", "\n", " ", ""],
-#         length_function=len
-#     )
-    
-#     chunks = text_splitter.split_documents(pages)
-#     return chunks
-
-def process_pdf(file_path: str) -> List[Document]:
-    """Process a single PDF file and extract both tables and text"""
-    chunks = []
-    
-    # Extract tables using Camelot
-    tables = camelot.read_pdf(file_path, pages='all', flavor='lattice')
-    for idx, table in enumerate(tables):
-        df = table.df
-        table_str = f"Table {idx + 1}:\n{df.to_string()}"
-        # Convert dict to Document
-        chunks.append(Document(
-            page_content=table_str,
-            metadata={
-                "source": file_path,
-                "page": table.parsing_report['page'],
-                "content_type": "table",
-                "table_number": idx + 1
-            }
-        ))
-    
-    # Extract text using PDFPlumber (if needed)
-    loader = PDFPlumberLoader(file_path)
-    text_pages = loader.load()
-    
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=200,
-        chunk_overlap=100,
-        separators=["\n\n", "\n", " ", ""]
-    )
-    
-    text_chunks = text_splitter.split_documents(text_pages)
-    for chunk in text_chunks:
-        chunk.metadata["content_type"] = "text"
-        chunks.append(chunk)
-    
-    return chunks
-
-@st.cache_resource(ttl="1h")  # Cache with 1 hour time-to-live
-def initialize_vector_store(openai_api_key):
-    """Initialize and return the vector store"""
-    persist_dir = "./chroma_db"
-    
-    try:
-        # Delete existing database if it exists
-        if os.path.exists(persist_dir):
-            import shutil
-            shutil.rmtree(persist_dir)
-        
-        # Initialize ChromaDB client with settings
-        settings = chromadb.Settings(
-            is_persistent=True,
-            persist_directory=persist_dir,
-            anonymized_telemetry=False
-        )
-        
-        embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key, model="text-embedding-3-large")
-        
-        vector_store = Chroma(
-            collection_name="financial_docs",
-            embedding_function=embeddings,
-            persist_directory=persist_dir
-        )
-        
-        return vector_store
-        
-    except Exception as e:
-        st.error(f"Failed to initialize vector store: {str(e)}")
-        st.error("Please ensure the application has write permissions in the current directory.")
-        return None
-
-def load_documents():
-    """Load and process all PDFs from the data folder"""
-    data_folder = 'data'
-    
-    if not os.path.exists(data_folder):
-        st.error(f"Data folder '{data_folder}' not found!")
-        return None
-    
-    pdf_files = [f for f in os.listdir(data_folder) if f.endswith('.pdf')]
-    if not pdf_files:
-        st.warning(f"No PDF files found in '{data_folder}' folder!")
-        return None
-    
-    all_chunks = []
-    for filename in pdf_files:
-        try:
-            filepath = os.path.join(data_folder, filename)
-            st.info(f"Processing {filename}...")
-            chunks = process_pdf(filepath)
-            all_chunks.extend(chunks)
-            
-        except Exception as e:
-            st.error(f"Error processing {filename}: {str(e)}")
-            continue
-    
-    return all_chunks
-
-def query_llm(client, prompt, vector_store):
-    # Perform similarity search
-    relevant_docs = vector_store.similarity_search(prompt, k=3)
-    
-    context = "\n".join([doc.page_content for doc in relevant_docs])
-    
+def get_chat_response(prompt, context=""):
+    """Get response from Azure OpenAI"""
     messages = [
-        {"role": "system", "content": f"""
-        You are a financial data analyst assistant that helps analyze financial data from PDFs.
-        
-        Use this context from the documents to answer the question:
-        {context}
-        
-        When analyzing the data:
-        1. Look for specific financial information in the provided context
-        2. If found, provide detailed analysis
-        3. If not found, inform the user what information is available
-        
-        If a visualization would be helpful, include EXACTLY ONE Python code block with matplotlib code in this format:
-        ```python
-        import matplotlib.pyplot as plt
-        
-        # Data
-        categories = ["cat1", "cat2", "cat3"]
-        values = [val1, val2, val3]
-        
-        # Create visualization
-        plt.figure(figsize=(10, 6))
-        # ... plotting code ...
-        plt.title("Chart Title")
-        plt.xlabel("X Label")
-        plt.ylabel("Y Label")
-        plt.tight_layout()
-        ```
-        
-        For monthly data, ensure to sort months chronologically, not alphabetically.
-        Always include proper axis labels and titles.
-        """}
+        {"role": "system", "content": "You are a helpful assistant that answers questions about documents and analyzes their content."},
+        {"role": "user", "content": f"Context: {context}\n\nQuestion: {prompt}"}
     ]
     
-    # Add conversation history and current prompt
-    for message in st.session_state.messages:
-        messages.append({
-            "role": message["role"],
-            "content": message["content"]
-        })
-    
-    messages.append({"role": "user", "content": prompt})
-
     response = client.chat.completions.create(
-        model="gpt-4o",  # Updated to a current model
+        model=os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME"),
         messages=messages,
         temperature=0
     )
+    return response.choices[0].message.content
+
+def compare_documents(doc1_text, doc2_text):
+    """Compare two documents and return analysis"""
+    prompt = f"""Compare these two documents and identify key differences:
+
+    Document 1:
+    {doc1_text}
+
+    Document 2:
+    {doc2_text}
+
+    Please compare the two documents clause by clause and identify any differences in text content, structure, or formatting. Follow these instructions strictly:
+
+    1. **Detailed Clause Comparison**: 
+    - Compare every clause word by word and highlight any differences, such as added, removed, or modified content.
+    - Include differences in formatting, punctuation, or structural arrangement if present.
+
+    2. **Highlighting Differences**: 
+    - For each clause, explicitly state:
+        - Any words, phrases, or sections that differ.
+        - Any changes in wording, phrasing, or formatting.
+    - Use clear and precise descriptions of the differences.
+
+    3. **No Difference Clause**: 
+    - If a clause is identical in both documents, explicitly state: "No differences found in this clause."
+
+    4. **Avoiding Assumptions**: 
+    - Do not assume any clause is identical unless verified word by word. Conduct a thorough and systematic comparison.
+
+    5. **Metadata and Structural Changes**:
+    - Include any differences in document metadata, headers, footers, or overall structure.
+
+    6. **Output Format**:
+    Present the findings in the following structured format:
     
-    response_content = response.choices[0].message.content
+    ### Clause-by-Clause Comparison
+
+    **Clause [X]:**  
+    - **Differences:** [Detail all differences word by word or confirm "No differences found."]  
+    - **Conclusion:** [Summarize whether the clause differs or not.]
+
+    ### Metadata and Structure
+    - **Metadata Differences:** [Highlight differences in metadata, such as file creation dates, titles, or page counts.]  
+    - **Structural Differences:** [Note changes in headers, page numbers, or section arrangements.]
+
+    This ensures a systematic and thorough comparison of all clauses without skipping or assuming similarity. Provide the analysis in a detailed and structured manner.
+    """
     
-    try:
-        code_match = re.search(r'```python\s*(.*?)\s*```', response_content, re.DOTALL)
+    return get_chat_response(prompt)
+
+# Streamlit UI
+st.title("Document Analysis and Comparison Tool")
+
+# Initialize session state for storing uploaded documents
+if 'uploaded_docs' not in st.session_state:
+    st.session_state.uploaded_docs = {}
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+
+# Sidebar for document upload
+with st.sidebar:
+    st.header("Upload Documents")
+    uploaded_file = st.file_uploader("Choose a PDF file", type=['pdf'], key="file_uploader")
+    
+    if uploaded_file is not None:
+        doc_name = uploaded_file.name
+        if doc_name not in st.session_state.uploaded_docs:
+            with st.spinner(f"Processing {doc_name}..."):
+                text_content = load_pdf_pypdf(uploaded_file)
+                st.session_state.uploaded_docs[doc_name] = text_content
+                st.success(f"✅ {doc_name} uploaded successfully!")
+
+    # Display uploaded documents
+    if st.session_state.uploaded_docs:
+        st.header("Uploaded Documents")
+        for doc_name in st.session_state.uploaded_docs.keys():
+            st.text(f"📄 {doc_name}")
+
+# Main area
+tab1, tab2 = st.tabs(["Chat with Documents", "Compare Documents"])
+
+# Chat Interface
+with tab1:
+    st.header("Chat with Documents")
+    
+    # Document selection for chat
+    if st.session_state.uploaded_docs:
+        selected_doc = st.selectbox(
+            "Select document to query:",
+            options=list(st.session_state.uploaded_docs.keys())
+        )
         
-        if code_match:
-            # Get the Python code
-            plot_code = code_match.group(1)
-            
-            # Create a new figure and axis
-            fig, ax = plt.subplots(figsize=(10, 6))
-            
-            # Create a namespace with all required variables
-            namespace = {
-                'plt': plt,
-                'np': np,
-                'fig': fig,
-                'ax': ax,
-                'autolabel': lambda rects: [ax.annotate(f'{height:.0f}', 
-                                                      xy=(rect.get_x() + rect.get_width()/2, height),
-                                                      xytext=(0, 3),
-                                                      textcoords='offset points',
-                                                      ha='center') 
-                                          for rect, height in [(rect, rect.get_height()) for rect in rects]]
-            }
-            
-            # Execute the plot code in the namespace
-            exec(plot_code, namespace)
-            
-            # Convert plot to image
-            buf = BytesIO()
-            plt.savefig(buf, format='png', bbox_inches='tight')
-            plt.close()
-            
-            # Store the new chart in session state
-            st.session_state.charts.append(buf)
-            
-            # Remove the code block from the response
-            response_content = re.sub(r'```python\s*.*?\s*```', '', response_content, flags=re.DOTALL)
-            response_content = response_content.strip()
-    
-    except Exception as e:
-        st.error(f"Error processing visualization: {str(e)}")
-        st.exception(e)
-    
-    return response_content
+        # Chat input
+        user_question = st.text_input("Ask a question about the document:")
+        if user_question:
+            with st.spinner("Generating response..."):
+                context = st.session_state.uploaded_docs[selected_doc]
+                response = get_chat_response(user_question, context)
+                
+                # Add to chat history
+                st.session_state.chat_history.append(("user", user_question))
+                st.session_state.chat_history.append(("assistant", response))
+        
+        # Display chat history
+        for role, message in st.session_state.chat_history:
+            if role == "user":
+                st.write("You:", message)
+            else:
+                st.write("Assistant:", message)
+    else:
+        st.info("Please upload a document to start chatting.")
 
-def main():
-    st.title("Financial Data Assistant")
+# Compare Documents Interface
+with tab2:
+    st.header("Compare Documents")
     
-    # Initialize charts list in session state if it doesn't exist
-    if 'charts' not in st.session_state:
-        st.session_state.charts = []
-    
-    # Get API key
-    openai_api_key = st.sidebar.text_input("Enter your OpenAI API key", type="password")
-    if not openai_api_key:
-        st.info("Please enter your OpenAI API key to continue.")
-        return
-    
-    client = OpenAI(api_key=openai_api_key)
-    
-    # Initialize vector store with better error handling
-    try:
-        vector_store = initialize_vector_store(openai_api_key)
-        if vector_store is None:
-            st.error("Vector store initialization failed. Please check your settings and try again.")
-            return
-    except Exception as e:
-        st.error(f"Error initializing vector store: {str(e)}")
-        return
-    
-    # Load documents button
-    if st.sidebar.button("Load/Reload Documents"):
-        with st.spinner("Processing documents..."):
-            try:
-                chunks = load_documents()
-                if chunks:
-                    try:
-                        # Add documents in batches of 5000
-                        batch_size = 5000
-                        for i in range(0, len(chunks), batch_size):
-                            batch = chunks[i:i + batch_size]
-                            vector_store.add_documents(batch)
-                            st.info(f"Processed batch {i//batch_size + 1} of {(len(chunks)-1)//batch_size + 1}")
-                        st.success(f"Successfully processed {len(chunks)} document chunks!")
-                    except Exception as e:
-                        st.error(f"Error adding documents to vector store: {str(e)}")
-                else:
-                    st.warning("No documents were loaded. Please check your data folder.")
-            except Exception as e:
-                st.error(f"Error processing documents: {str(e)}")
-
-    # Display chat history
-    for idx, message in enumerate(st.session_state.messages):
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-            if "viz" in message and message["viz"] is not None:
-                message["viz"].seek(0)
-                st.image(message["viz"].getvalue(), width=None)
-
-    # Chat input
-    if prompt := st.chat_input("Ask me about the financial data!"):
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        with st.chat_message("user"):
-            st.markdown(prompt)
-
-        with st.chat_message("assistant"):
-            # Clear previous charts before getting new response
-            st.session_state.charts = []
-            
-            response = query_llm(client, prompt, vector_store)
-            st.markdown(response)
-            
-            # Display only the charts generated from this response
-            for chart in st.session_state.charts:
-                if chart is not None:
-                    chart.seek(0)
-                    st.image(chart.getvalue(), width=None)
-            
-            # Store both the response and the chart in the message history
-            message_with_viz = {
-                "role": "assistant", 
-                "content": response
-            }
-            if st.session_state.charts:  # Only add viz if there are charts
-                message_with_viz["viz"] = st.session_state.charts[0]
-            
-            st.session_state.messages.append(message_with_viz)
-
-if __name__ == "__main__":
-    main()
+    if len(st.session_state.uploaded_docs) >= 2:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            doc1 = st.selectbox(
+                "Select first document:",
+                options=list(st.session_state.uploaded_docs.keys()),
+                key="doc1"
+            )
+        
+        with col2:
+            doc2 = st.selectbox(
+                "Select second document:",
+                options=list(st.session_state.uploaded_docs.keys()),
+                key="doc2"
+            )
+        
+        if st.button("Compare Documents"):
+            if doc1 != doc2:
+                with st.spinner("Analyzing differences..."):
+                    comparison_result = compare_documents(
+                        st.session_state.uploaded_docs[doc1],
+                        st.session_state.uploaded_docs[doc2]
+                    )
+                    st.write("### Comparison Results")
+                    st.write(comparison_result)
+            else:
+                st.warning("Please select different documents for comparison.")
+    else:
+        st.info("Please upload at least two documents to compare.")
