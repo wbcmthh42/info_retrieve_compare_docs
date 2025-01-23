@@ -85,6 +85,35 @@ def compare_documents(doc1_text, doc2_text):
     
     return get_chat_response(prompt)
 
+def count_tokens(text):
+    """Rough estimate of token count"""
+    return len(text.split()) * 1.3  # Rough approximation
+
+def truncate_text(text, max_tokens=1000):
+    """Truncate text to approximate token limit"""
+    words = text.split()
+    estimated_tokens = 0
+    for i, word in enumerate(words):
+        estimated_tokens += 1.3  # Rough approximation
+        if estimated_tokens > max_tokens:
+            return " ".join(words[:i]) + "..."
+    return text
+
+def prepare_context(documents_dict, selected_docs):
+    """Prepare context from selected documents while respecting token limits"""
+    # Reserve tokens for system message, user question, and response
+    MAX_TOTAL_TOKENS = 120000  # Leave buffer for system message and response
+    MAX_TOKENS_PER_DOC = MAX_TOTAL_TOKENS // max(len(selected_docs), 1)
+    
+    contexts = []
+    for doc_name, is_selected in selected_docs.items():
+        if is_selected:
+            doc_text = documents_dict[doc_name]
+            truncated_text = truncate_text(doc_text, MAX_TOKENS_PER_DOC)
+            contexts.append(f"Document: {doc_name}\n{truncated_text}")
+    
+    return "\n\n=== Document Separator ===\n\n".join(contexts)
+
 # Streamlit UI
 st.title("Document Analysis and Comparison Tool")
 
@@ -120,25 +149,30 @@ tab1, tab2 = st.tabs(["Chat with Documents", "Compare Documents"])
 with tab1:
     st.header("Chat with Documents")
     
-    # Document selection for chat
     if st.session_state.uploaded_docs:
-        selected_doc = st.selectbox(
-            "Select document to query:",
-            options=list(st.session_state.uploaded_docs.keys())
-        )
+        st.write("Select documents to query:")
+        selected_docs = {}
+        for doc_name in st.session_state.uploaded_docs.keys():
+            selected_docs[doc_name] = st.checkbox(f"📄 {doc_name}", value=True)
         
-        # Chat input
-        user_question = st.text_input("Ask a question about the document:")
+        user_question = st.text_input("Ask a question about the selected documents:")
         if user_question:
-            with st.spinner("Generating response..."):
-                context = st.session_state.uploaded_docs[selected_doc]
-                response = get_chat_response(user_question, context)
-                
-                # Add to chat history
-                st.session_state.chat_history.append(("user", user_question))
-                st.session_state.chat_history.append(("assistant", response))
+            if any(selected_docs.values()):
+                with st.spinner("Generating response..."):
+                    # Use the new prepare_context function
+                    combined_context = prepare_context(
+                        st.session_state.uploaded_docs,
+                        selected_docs
+                    )
+                    
+                    response = get_chat_response(user_question, combined_context)
+                    
+                    st.session_state.chat_history.append(("user", user_question))
+                    st.session_state.chat_history.append(("assistant", response))
+            else:
+                st.warning("Please select at least one document to query.")
         
-        # Display chat history
+        st.write("### Chat History")
         for role, message in st.session_state.chat_history:
             if role == "user":
                 st.write("You:", message)
